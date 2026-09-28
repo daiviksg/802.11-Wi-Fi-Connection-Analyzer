@@ -179,3 +179,44 @@ After the fixes: **0 mismatches**. Checking one parser against another in a diff
 - *Walk me through reading one frame safely.* caplen ≥ 8 → version → it_len within caplen → FCS flag → strip and verify the FCS → FC (2 bytes) → version 0 → `header_len` → only then read addresses.
 - *Why is TSFT aligned to 8 bytes, and 8 from where?* Radiotap aligns each field to its natural size, measured from the start of the radiotap header (not the packet, not the present word).
 - *How do you know there are no leaks?* One allocation (the pcap handle) with `pcap_close` on every path, checked by LeakSanitizer and valgrind in CI.
+
+## M4: Validation against Wireshark
+
+### The `compare` command
+
+`wifi-analyzer compare <capture>` runs three parsers on the same file and compares them field by field, keyed by frame number:
+
+| Source | How |
+|---|---|
+| Python | `frames.py` (Scapy for management/data frames, plus our own length and radiotap checks) |
+| C | `c/wifiparse` (found via `--wifiparse`, `$WIFIPARSE`, `c/wifiparse`, or `PATH`) |
+| tshark | `tshark -T fields -e frame.number -e wlan.fc.type -e wlan.fc.subtype -e wlan.sa -e wlan.da -e wlan.bssid -e wlan.seq -e wlan.fc.retry -e wlan.fc.protected -e wlan.fcs.status`, with `-o wlan.check_checksum:TRUE` so Wireshark also validates the FCS |
+
+Agreement = matching (frame, field) pairs / all (frame, field) pairs. A frame missing from one side counts as a disagreement on every field, so gaps can't make the number look better. The report shows two figures:
+- **Clean frames**: valid FCS and a complete header. This is the fair comparison: every parser should give the same answer.
+- **All frames**: including corrupted and truncated ones, where "the right answer" is partly a matter of policy.
+
+### Results (CI, Wireshark from Ubuntu's tshark package)
+
+Across 21 captures (20 synthetic 802.11 captures + the public `wpa-Induction.pcap`), 1,306 frames, of which 1,292 are clean:
+
+| Pair | Clean frames | All frames |
+|---|---|---|
+| Python vs tshark | **100%** (11,628 / 11,628 fields) | 99.234% (11,664 / 11,754) |
+| C vs tshark | **100%** (11,628 / 11,628 fields) | 99.234% (11,664 / 11,754) |
+| Python vs C | **100%** (19,380 / 19,380 fields) | 100% (19,590 / 19,590) |
+
+The 90 non-matching fields are exactly **10 corrupted frames × 9 fields** in the public capture: frames whose Frame Control claims protocol version 2 or 3, which doesn't exist. Wireshark doesn't dissect them as 802.11 at all. We report their type and subtype, mark them as errors, and never use them as evidence. Fields also match on the other 3 bad-FCS frames and on the truncated frame.
+
+In CI, all 150 tests pass on the **ASan + UBSan** build with none skipped: that includes the tshark comparisons, every-truncation-point tests and random-byte fuzzing. **Valgrind** reports no errors or leaks on any capture. The job publishes these numbers as annotations and a job summary, and uploads the full reports as an artifact.
+
+### Why three parsers?
+
+- Python vs C proves the C code does what the (easier to read) Python does, byte for byte, including on malformed input.
+- Both vs tshark proves that shared understanding matches Wireshark, the tool network engineers actually trust. Before writing the address logic I read Wireshark's source to see how it defines `wlan.sa` / `wlan.da` / `wlan.bssid` (4-address frames, A-MSDU, PS-Poll, CF-End), so the fields mean the same thing on each side.
+- Agreeing on clean frames but reporting disagreements on corrupted ones (instead of hiding them) is what makes the number trustworthy.
+
+### Questions to be ready for
+
+- *How did you validate the C parser?* Field-by-field against a Scapy-based parser and against Wireshark's dissector on 1,306 frames (100% on clean frames), plus fuzzing and truncation at every byte under ASan/UBSan and valgrind in CI.
+- *What didn't match, and why?* Ten frames corrupted in the air claim a nonexistent protocol version. Wireshark refuses to dissect them; we flag them. That's a policy difference on garbage input, not a parsing bug.

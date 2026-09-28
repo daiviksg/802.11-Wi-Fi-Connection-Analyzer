@@ -20,9 +20,9 @@ See [SPEC.md](SPEC.md) for the full specification.
 | M0 | Repo setup, CI, `frames` command | ✅ done |
 | M1 | Python parsing: management frames, RSN IE, EAPOL M1 to M4, DHCP | ✅ done |
 | M2 | Per-client timelines, failure classification, text/JSON output | ✅ done |
-| M3 | C/libpcap parser for radiotap + 802.11 headers, ASan build | ⏳ next |
-| M4 | `compare` command: Python vs C vs tshark, in CI | |
-| M5 | Polish: demo output, architecture diagram, metrics | |
+| M3 | C/libpcap parser for radiotap + 802.11 headers, ASan build | ✅ done |
+| M4 | `compare` command: Python vs C vs tshark, in CI | ✅ done |
+| M5 | Polish: demo output, architecture diagram, metrics | ⏳ next |
 
 ## Quick start
 
@@ -31,7 +31,9 @@ python -m venv .venv
 .venv/bin/pip install -e ".[dev]"          # Windows: .venv\Scripts\pip
 python tests/data/public/fetch.py          # downloads public sample captures
 wifi-analyzer analyze tests/data/synthetic/handshake_no_m3.pcap
-pytest
+make -C c                                  # C parser (needs libpcap-dev); `make -C c debug` for ASan/UBSan
+wifi-analyzer compare tests/data/public/wpa-Induction.pcap
+pytest                                     # C and tshark tests are skipped if not available
 ```
 
 ## `analyze`: where did the connection fail?
@@ -74,6 +76,25 @@ Result codes: `CONNECTED`, `AUTH_FAILED`, `SAE_FAILED`, `ASSOC_REJECTED`, `HANDS
 ```
 
 Options: `--all` includes every frame (control, data), `--limit N`, and `--format json` prints one JSON object per frame. Malformed or truncated frames are always shown with an `ERROR:` note; they never crash the parser.
+
+## `wifiparse` and `compare`: is the parsing right?
+
+`c/wifiparse` is an independent C/libpcap parser for radiotap and 802.11 headers. It prints one JSON line per frame, checks every read against the captured length, and reports malformed frames instead of crashing:
+
+```
+$ c/wifiparse --limit 1 tests/data/public/wpa-Induction.pcap
+{"idx":1,"ts":1167891285.859308,"caplen":168,"type":0,"subtype":8,"to_ds":false,"from_ds":false,"retry":false,"protected":false,"addr1":"ff:ff:ff:ff:ff:ff","addr2":"00:0c:41:82:b2:55","addr3":"00:0c:41:82:b2:55","addr4":null,"sa":"00:0c:41:82:b2:55","da":"ff:ff:ff:ff:ff:ff","bssid":"00:0c:41:82:b2:55","seq":3973,"fcs_ok":true,"error":null}
+```
+
+`wifi-analyzer compare <capture>` checks the Python parser, the C parser and Wireshark's `tshark` against each other, field by field (type, subtype, SA, DA, BSSID, sequence number, Retry, Protected, FCS verdict). Results in CI over 21 captures (1,306 frames):
+
+| | Clean frames (valid FCS, complete header) | All frames |
+|---|---|---|
+| Python vs tshark | 100% | 99.23% |
+| C vs tshark | 100% | 99.23% |
+| Python vs C | 100% | 100% |
+
+The only disagreements are 10 frames corrupted in the air that claim a nonexistent 802.11 protocol version: Wireshark doesn't dissect them, and we flag them as errors. CI also runs every test (including byte-by-byte truncation and random-input fuzzing) against an AddressSanitizer + UndefinedBehaviorSanitizer build, and valgrind on every capture. Details are in [docs/NOTES.md](docs/NOTES.md).
 
 ## Supported inputs
 
