@@ -105,3 +105,38 @@ def dot11_bytes(pkt: RawPacket) -> bytes | None:
     if pkt.linktype == DLT_IEEE802_11:
         return pkt.data
     return None
+
+
+# radiotap it_present bits (radiotap.org "Defined fields") and Flags bits.
+RADIOTAP_PRESENT_TSFT = 1 << 0  # u64, aligned to 8 bytes
+RADIOTAP_PRESENT_FLAGS = 1 << 1  # u8
+RADIOTAP_PRESENT_EXT = 1 << 31  # another present word follows
+RADIOTAP_FLAG_FCS_AT_END = 0x10
+
+
+def radiotap_has_fcs(data: bytes) -> bool:
+    """True if the radiotap Flags field says the frame ends with its 4-byte FCS.
+
+    The present bitmaps come first (another u32 follows while bit 31 is set),
+    then the fields in bit order, each aligned to its size, counted from the
+    start of the header. Only TSFT (bit 0, u64) can come before Flags (bit 1).
+    We read Flags even if later fields are malformed: its position doesn't
+    depend on them. Every read stays inside it_len.
+    """
+    try:
+        it_len = radiotap_length(data)
+    except RadiotapError:
+        return False
+    (present0,) = struct.unpack_from("<I", data, 4)
+    off, word = 4, present0
+    while word & RADIOTAP_PRESENT_EXT:
+        off += 4
+        if off + 4 > it_len:
+            return False
+        (word,) = struct.unpack_from("<I", data, off)
+    off += 4
+    if present0 & RADIOTAP_PRESENT_TSFT:
+        off = (off + 7) // 8 * 8 + 8
+    if present0 & RADIOTAP_PRESENT_FLAGS and off < it_len:
+        return bool(data[off] & RADIOTAP_FLAG_FCS_AT_END)
+    return False

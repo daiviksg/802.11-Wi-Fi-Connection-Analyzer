@@ -245,3 +245,13 @@ def dhcp_ethernet(msg: str, xid=0x0BADCAFE, sta=STA, your_ip="10.0.0.20"):
         Ether(src=ROUTER, dst=BCAST) / IP(src="10.0.0.1", dst="255.255.255.255") / UDP(sport=67, dport=68)
         / BOOTP(op=2, xid=xid, yiaddr=yi, chaddr=mac2str(sta)) / DHCP(options=options + ["end"])
     )
+
+
+def write_raw_pcap(path, packets: list[bytes], linktype: int, t0: int = 1_700_000_000) -> None:
+    """Write byte strings as a classic little-endian pcap (one second apart).
+    Used for malformed input, which Scapy's writers won't mix with normal frames."""
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, linktype))
+        for i, data in enumerate(packets):
+            fh.write(struct.pack("<IIII", t0 + i, 0, len(data), len(data)))
+            fh.write(data)

@@ -29,12 +29,11 @@ from scapy.layers.dot11 import (
     Dot11Deauth,
     Dot11Disas,
     Dot11ReassoResp,
-    RadioTap,
 )
 from scapy.layers.eap import EAPOL
 from scapy.layers.l2 import Ether
 
-from .capture import DLT_EN10MB, DLT_IEEE802_11_RADIO, RadiotapError, RawPacket, dot11_bytes
+from .capture import DLT_EN10MB, DLT_IEEE802_11_RADIO, RadiotapError, RawPacket, dot11_bytes, radiotap_has_fcs
 from .codes import DHCP_MESSAGE_TYPES
 from .rsn import ELEMENT_ID_RSN, RsnInfo, parse_rsn
 
@@ -61,6 +60,12 @@ MGMT_SUBTYPE_NAMES = {
     13: "Action",
     14: "Action No Ack",
 }
+CTRL_PS_POLL, CTRL_CF_END = 10, 14
+# Control subtypes that carry a transmitter address (Addr2) after Addr1:
+# Trigger (2, added by 802.11ax), Beamforming Report Poll (4), VHT/HE NDP
+# Announcement (5), BlockAckReq (8), BlockAck (9), PS-Poll (10), RTS (11),
+# CF-End (14), CF-End+CF-Ack (15). ACK (13) and CTS (12) carry only Addr1.
+CTRL_WITH_ADDR2 = {2, 4, 5, 8, 9, 10, 11, 14, 15}
 CTRL_SUBTYPE_NAMES = {8: "BlockAckReq", 9: "BlockAck", 10: "PS-Poll", 11: "RTS", 12: "CTS", 13: "ACK", 14: "CF-End"}
 DATA_SUBTYPE_NAMES = {0: "Data", 4: "Null", 8: "QoS Data", 12: "QoS Null"}
 
@@ -161,6 +166,7 @@ class Frame:
     addr1: str | None = None
     addr2: str | None = None
     addr3: str | None = None
+    addr4: str | None = None  # only in 4-address (ToDS and FromDS) data frames
     # Source, destination and BSSID worked out from the addresses and ToDS/FromDS.
     sa: str | None = None
     da: str | None = None
@@ -211,8 +217,8 @@ def header_len(ftype: int, subtype: int, flags: int) -> int:
       * Data: the same 24, plus Addr4 (6) when both ToDS and FromDS are set
         (wireless distribution system), plus QoS Control (2) for QoS subtypes
         (subtype bit 3), plus HT Control (4) if a QoS frame has Order set.
-      * Control frames are short. ACK and CTS carry only Addr1 (10 bytes).
-        RTS, PS-Poll, CF-End, BlockAckReq and BlockAck also carry Addr2 (16).
+      * Control frames are short. ACK and CTS carry only Addr1 (10 bytes);
+        the subtypes in CTRL_WITH_ADDR2 also carry Addr2 (16).
     """
     if ftype == TYPE_MGMT:
         return 24 + (4 if flags & FC_ORDER else 0)
@@ -226,7 +232,7 @@ def header_len(ftype: int, subtype: int, flags: int) -> int:
                 n += 4
         return n
     if ftype == TYPE_CTRL:
-        return 16 if subtype in (8, 9, 10, 11, 14, 15) else 10
+        return 16 if subtype in CTRL_WITH_ADDR2 else 10
     return 10  # extension frames: at least FC + Duration + Addr1
 
 
@@ -250,7 +256,7 @@ def parse_frame(pkt: RawPacket) -> Frame | None:
     # don't reliably set the radiotap "bad FCS" bit, so we verify it ourselves.
     # A corrupted frame can look like anything (a deauth, a bogus address),
     # so later stages must ignore frames with fcs_ok == False.
-    if pkt.linktype == DLT_IEEE802_11_RADIO and _radiotap_says_fcs(pkt.data):
+    if pkt.linktype == DLT_IEEE802_11_RADIO and radiotap_has_fcs(pkt.data):
         if len(body) < 4:
             frame.error = f"truncated: {len(body)} bytes, FCS alone needs 4"
             return frame
@@ -283,6 +289,17 @@ def parse_frame(pkt: RawPacket) -> Frame | None:
         frame.error = f"truncated: {len(body)} bytes, {frame.name} header needs {hlen}"
         return frame
 
+    if frame.type in (TYPE_CTRL, TYPE_EXT):
+        # Control and extension headers are short and fixed, and Scapy's idea
+        # of some newer control subtypes differs from the standard layout, so
+        # read the addresses directly. Extension frames (e.g. the 60 GHz DMG
+        # Beacon) have their own layout; we report only Addr1.
+        frame.addr1 = _mac(body, 4)
+        if frame.type == TYPE_CTRL and frame.subtype in CTRL_WITH_ADDR2:
+            frame.addr2 = _mac(body, 10)
+        _resolve_addresses(frame)
+        return frame
+
     # Scapy doesn't know about the HT Control field, so if it's present we
     # remove it (and clear the Order bit) before decoding. That gives Scapy a
     # frame with the same fields, laid out the way it expects.
@@ -296,13 +313,13 @@ def parse_frame(pkt: RawPacket) -> Frame | None:
         frame.error = f"scapy decode failed: {exc}"
         return frame
 
-    # Scapy leaves fields a frame type doesn't have (e.g. Addr3 on a
-    # control frame) as None, which is what we want.
     frame.addr1, frame.addr2, frame.addr3 = dot11.addr1, dot11.addr2, dot11.addr3
+    if frame.type == TYPE_DATA and frame.to_ds and frame.from_ds:
+        frame.addr4 = dot11.addr4
     if dot11.SC is not None:
         # Sequence Control: low 4 bits fragment number, high 12 bits sequence number.
         frame.seq = dot11.SC >> 4
-    _resolve_addresses(frame)
+    _resolve_addresses(frame, _is_amsdu(frame, body))
 
     if frame.type == TYPE_MGMT:
         _parse_mgmt(frame, dot11, body[hlen:])
@@ -314,17 +331,31 @@ def parse_frame(pkt: RawPacket) -> Frame | None:
     return frame
 
 
-def _resolve_addresses(frame: Frame) -> None:
-    """Map Addr1-3 to source, destination and BSSID.
+def _is_amsdu(frame: Frame, body: bytes) -> bool:
+    """QoS data frames carry an "A-MSDU Present" bit (bit 7 of the first QoS
+    Control byte). An A-MSDU packs several packets, each with its own
+    source/destination, so the header's Addr3 no longer names one SA or DA."""
+    if frame.type != TYPE_DATA or not frame.subtype & 0x8 or frame.subtype & 0x4:
+        return False  # not QoS, or a "no data" subtype such as QoS Null
+    qos_offset = 30 if frame.to_ds and frame.from_ds else 24
+    return len(body) > qos_offset and bool(body[qos_offset] & 0x80)
+
+
+def _resolve_addresses(frame: Frame, amsdu: bool = False) -> None:
+    """Map Addr1-4 to source, destination and BSSID, the same way Wireshark
+    fills wlan.sa / wlan.da / wlan.bssid.
 
     Management frames: Addr1 = DA, Addr2 = SA, Addr3 = BSSID.
     Data frames depend on ToDS/FromDS (IEEE 802.11-2020 9.3.2.1):
-        ToDS FromDS   Addr1   Addr2   Addr3
-         0     0      DA      SA      BSSID   (no AP relay, e.g. IBSS)
-         1     0      BSSID   SA      DA      (client -> AP)
-         0     1      DA      BSSID   SA      (AP -> client)
-         1     1      RA      TA      DA      (+Addr4 = SA; mesh/WDS, no single BSSID)
-    Control frames only carry receiver/transmitter addresses, so we leave these None.
+        ToDS FromDS   Addr1   Addr2   Addr3   Addr4
+         0     0      DA      SA      BSSID   -       (no AP relay, e.g. IBSS)
+         1     0      BSSID   SA      DA      -       (client -> AP)
+         0     1      DA      BSSID   SA      -       (AP -> client)
+         1     1      RA      TA      DA      SA      (mesh/WDS: no single BSSID)
+    In an A-MSDU, Addr3 carries the BSSID instead of SA/DA (and in the
+    4-address case Addr3/Addr4 aren't SA/DA either), so those stay None.
+    Control frames carry receiver/transmitter addresses; only PS-Poll
+    (Addr1 = BSSID) and CF-End (Addr2 = BSSID) name the BSS.
     """
     a1, a2, a3 = frame.addr1, frame.addr2, frame.addr3
     if frame.type == TYPE_MGMT:
@@ -333,11 +364,18 @@ def _resolve_addresses(frame: Frame) -> None:
         if not frame.to_ds and not frame.from_ds:
             frame.da, frame.sa, frame.bssid = a1, a2, a3
         elif frame.to_ds and not frame.from_ds:
-            frame.bssid, frame.sa, frame.da = a1, a2, a3
+            frame.bssid, frame.sa = a1, a2
+            frame.da = None if amsdu else a3
         elif frame.from_ds and not frame.to_ds:
-            frame.da, frame.bssid, frame.sa = a1, a2, a3
-        else:
-            frame.da = a3
+            frame.da, frame.bssid = a1, a2
+            frame.sa = None if amsdu else a3
+        elif not amsdu:
+            frame.da, frame.sa = a3, frame.addr4
+    elif frame.type == TYPE_CTRL:
+        if frame.subtype == CTRL_PS_POLL:
+            frame.bssid = a1
+        elif frame.subtype == CTRL_CF_END:
+            frame.bssid = a2
 
 
 def _parse_mgmt(frame: Frame, dot11: Dot11, mgmt_body: bytes) -> None:
@@ -524,14 +562,5 @@ def _parse_ethernet(pkt: RawPacket, frame: Frame) -> Frame:
     return frame
 
 
-def _radiotap_says_fcs(data: bytes) -> bool:
-    """True if the radiotap Flags field is present with the FCS-at-end bit (0x10).
-
-    Finding Flags means walking the radiotap "present" bitmaps and field
-    alignments. Scapy already does that; the C parser does it by hand.
-    """
-    try:
-        rt = RadioTap(data)
-    except Exception:
-        return False
-    return bool(rt.present and rt.present.Flags and rt.Flags is not None and rt.Flags.FCS)
+def _mac(data: bytes, offset: int) -> str:
+    return ":".join(f"{b:02x}" for b in data[offset:offset + 6])

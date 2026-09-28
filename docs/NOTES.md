@@ -128,3 +128,54 @@ Status, reason, AKM and cipher tables (`codes.py`) are copied from Wireshark's `
 - *A user says "Wi-Fi doesn't work". What do you look at?* The client's last attempt: did authentication, association and the 4-way handshake complete? Which message is missing, and did the AP retry? Then DHCP, if it's visible.
 - *Why would the AP re-send M1?* It didn't get a valid M2 in time: the client didn't answer, or its MIC was wrong.
 - *How do you avoid blaming the wrong stage?* Ignore corrupted frames, drop MAC-level duplicates, require evidence before calling a failure, and prefer explicit reason and status codes over inference.
+
+## M3: The C parser (`c/wifiparse.c`)
+
+### What it does
+
+It opens a capture with libpcap (`pcap_open_offline`, which reads both pcap and pcapng), checks the link type (`pcap_datalink`), and loops over `pcap_next_ex`. For each packet it prints one JSON line with type, subtype, the flag bits, Addr1-4, SA/DA/BSSID, the sequence number, and the FCS verdict. A frame it can't parse still produces a line, with `"error"` set. `--quiet` prints only a summary (frames, errors, seconds), which M5 uses for the speed measurement.
+
+### Walk through the code
+
+1. **`parse_radiotap`**: at least 8 bytes, version 0, then `it_len` (little-endian u16 at offset 2). Reject `it_len < 8` and `it_len > caplen`. Then find the **Flags** field so we know whether the frame ends with an FCS:
+   - The present bitmaps come first. Keep reading 32-bit words while bit 31 (EXT) is set.
+   - The fields start after the last word. Only **TSFT** (bit 0, a u64) can come before Flags (bit 1).
+   - TSFT is **8-byte aligned, counted from the start of the radiotap header**, so round the offset up to a multiple of 8, then skip 8.
+   - Flags is the next byte, and bit 0x10 means "FCS at end".
+
+   Every read stays below `it_len`.
+2. **FCS**: if present, the last 4 bytes are a CRC-32 (reflected polynomial 0xEDB88320, init and final XOR 0xFFFFFFFF, the same CRC as Ethernet and zlib), stored least-significant byte first. The CRC is computed over the frame without those 4 bytes and compared.
+3. **`parse_80211`**: Frame Control gives version, type, subtype and flags. Refuse versions other than 0. Compute **`header_len`** from type/subtype/flags, and only after checking `len >= header_len` read the addresses and Sequence Control. So every offset used afterwards is provably in bounds.
+4. **`resolve_addresses`**: the ToDS/FromDS table (the same one Wireshark uses). The special cases are A-MSDU, PS-Poll and CF-End.
+
+### C decisions worth defending
+
+- **No pointer casts for multi-byte fields.** `*(uint16_t *)p` is undefined behaviour when `p` is unaligned (and radiotap/802.11 fields often are), and it depends on host endianness. `le16()` / `le32()` assemble the value byte by byte: always correct, and UBSan-clean.
+- **`caplen`, never `len`.** `pcap_pkthdr.len` is the size on the wire; `caplen` is what was actually saved (a snap length can cut packets). All bounds use `caplen`.
+- **No allocation per packet.** The frame struct lives on the stack and address fields point into libpcap's buffer, valid until the next `pcap_next_ex`. The only heap object is the pcap handle, closed on every return path. There's nothing to leak.
+- **Error strings need no JSON escaping.** They're our own `snprintf` output with no quotes or backslashes. MACs are printed as hex, so no bytes from the packet ever reach the output as text.
+- **Build flags**: `-std=c11 -Wall -Wextra -Werror -Wshadow -Wformat=2 -Wconversion -Wstrict-prototypes -Wmissing-prototypes`. `-D_DEFAULT_SOURCE` is needed because `pcap.h` uses BSD types (`u_char`) that glibc hides in strict C11 mode. `make debug` adds `-fsanitize=address,undefined -fno-sanitize-recover=all`, so any finding aborts with a non-zero status and fails the test that ran it.
+
+### How it's tested (`tests/test_c_parser.py`)
+
+The C output is compared, field by field, with the Python parser on every capture, plus inputs designed to break it:
+- every synthetic frame cut at **every possible length** (with and without radiotap);
+- 5,000 **random frames** (fixed seed), most behind random radiotap headers;
+- radiotap edge cases: empty packet, `it_len` too small or too large, an EXT bit with no second word, and TSFT alignment with one and with two present words;
+- 4-address and A-MSDU frames, pcapng input, `--limit` / `--quiet`, and bad arguments or files.
+
+In CI this all runs against the ASan/UBSan build, and valgrind runs over every capture. A frame counts as matching only if every field matches **and** C reports an error exactly when Python couldn't read the header.
+
+### What the cross-check found (in the Python side)
+
+A local run over the synthetic captures, every truncation point, the public capture and 20,000 random frames (550,500 field comparisons) found 1,923 mismatches, all in the random frames and all Python bugs:
+- **Scapy mis-reads newer control subtypes.** It expects different fields for Trigger, NDP Announcement and Control Frame Extension frames than our length check allows for, so it threw on otherwise valid frames. Python now reads control and extension headers directly, and both parsers treat Trigger (2), Beamforming Report Poll (4) and NDP Announcement (5) as RA + TA frames.
+- **Scapy discards radiotap Flags** when later radiotap fields are malformed, even though Flags sits at a fixed offset. Python now walks the radiotap bitmap by hand, like C.
+
+After the fixes: **0 mismatches**. Checking one parser against another in a different language, then fuzzing both, found problems neither unit tests nor the real capture had shown.
+
+### Questions to be ready for
+
+- *Walk me through reading one frame safely.* caplen ≥ 8 → version → it_len within caplen → FCS flag → strip and verify the FCS → FC (2 bytes) → version 0 → `header_len` → only then read addresses.
+- *Why is TSFT aligned to 8 bytes, and 8 from where?* Radiotap aligns each field to its natural size, measured from the start of the radiotap header (not the packet, not the present word).
+- *How do you know there are no leaks?* One allocation (the pcap handle) with `pcap_close` on every path, checked by LeakSanitizer and valgrind in CI.
