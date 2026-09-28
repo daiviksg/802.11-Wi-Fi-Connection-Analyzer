@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Public captures are downloaded by tests/data/public/fetch.py, never committed.
+tests/data/public/*.pcap
+tests/data/public/*.pcapng
+tests/data/public/*.gz
+
+# C build outputs (Milestone 3)
+c/wifiparse
+c/wifiparse-debug
+c/*.o

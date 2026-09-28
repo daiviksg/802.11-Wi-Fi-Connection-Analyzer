@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wifi-analyzer"
+version = "0.1.0"
+description = "Pinpoints where an 802.11 Wi-Fi connection attempt fails, from a packet capture."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Daivik S Gokhale" }]
+dependencies = [
+    "scapy>=2.5",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+wifi-analyzer = "wifi_analyzer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wifi_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
