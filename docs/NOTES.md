@@ -47,3 +47,56 @@ Synthetic frames are built with Scapy in the tests and use *locally administered
 - *Why can't you hard-code the radiotap length?* Its length depends on which fields the driver included. Different drivers produce different lengths, even within one file.
 - *How do you know where the 802.11 header ends?* It depends on type, subtype, and the ToDS/FromDS flags. See `min_header_len`.
 - *What happens with a corrupted frame?* The FCS check marks it. It's shown for debugging but never used as evidence.
+
+## M1: Management frames, RSN, EAPOL and DHCP
+
+### How a client joins a WPA2/WPA3 network
+
+1. **Discovery.** The AP sends a **Beacon** about 10 times a second, and a client can also send a **Probe Request** and get a **Probe Response**. Both carry the SSID, the channel, and the **RSN element** describing the security.
+2. **802.11 Authentication.** For WPA2 this is "Open System": a request and a response with a status code, and no real security (the name is historical). For WPA3 it's **SAE**. Each side sends a *Commit* (transaction sequence 1), then a *Confirm* (sequence 2). SAE turns the password into a key that an eavesdropper can't brute-force offline.
+3. **(Re)Association.** The client asks to join and puts its chosen cipher and AKM in its own RSN element. The AP answers with a status code and an **AID** (association ID; the field's top two bits are always set, so we mask with `0x3FFF`). Reassociation is the same exchange when the client moves (roams) to another AP of the same network.
+4. **EAPOL 4-way handshake.** Both sides turn the shared secret (PMK) into session keys, and each proves it has the same secret without sending it.
+5. **DHCP.** The client gets an IP address. From here on everything is encrypted, so DHCP is only visible on open networks, decrypted captures, or the wired side.
+
+**Addresses depend on the ToDS/FromDS bits.** In a data frame from the client to the AP (ToDS=1), Addr1 is the BSSID, Addr2 the source, and Addr3 the final destination. From the AP to the client (FromDS=1), Addr1 is the destination, Addr2 the BSSID, and Addr3 the original source. `_resolve_addresses` turns these into `sa` / `da` / `bssid` so later code never has to think about it.
+
+### RSN element (`rsn.py`)
+
+It contains a version, a group cipher, a list of pairwise ciphers, a list of **AKM** suites (how keys are agreed: 2 = PSK, 8 = SAE, 1 = 802.1X, 18 = OWE), and RSN Capabilities. Two capability bits matter here: **MFPC** (0x80, "I can do Protected Management Frames") and **MFPR** (0x40, "I require them"). WPA3-Personal requires PMF. Transition mode advertises both PSK and SAE with MFPC set, so older WPA2 clients can still join.
+
+Every field after Version is optional, so the parser checks each read against the remaining length and reports "truncated in AKM list" rather than reading past the end. No RSN element plus the Privacy capability bit means WEP; no RSN element and no Privacy bit means Open.
+
+### EAPOL-Key messages (`frames.py`)
+
+EAPOL comes from 802.1X, so its fields are **big-endian**, while 802.11 fields are little-endian. That's a classic interview trap. The **Key Information** field identifies the message:
+
+| | Ack | MIC | Install | Secure | Key Data |
+|---|---|---|---|---|---|
+| M1 (AP) | 1 | 0 | 0 | 0 | none (or a PMKID) |
+| M2 (client) | 0 | 1 | 0 | 0 | client's RSN element |
+| M3 (AP) | 1 | 1 | 1 | 1 | encrypted group key |
+| M4 (client) | 0 | 1 | 0 | 1 | none |
+
+- **Ack** means "sent by the AP, reply expected", so Ack alone is M1 and Ack+Install is M3.
+- **M2 vs M4** is the subtle case. The standard says M4 has Secure=1 and M2 doesn't, but Windows sets Secure on M2 when rekeying. So, like Wireshark, we decide by **Key Data**: M2 always carries the client's RSN element and M4 carries none. Only if Key Data is empty do we use Secure and the nonce (M2 always has the client's SNonce, M4 usually has zeros).
+- The **replay counter** increases with each AP message and the client echoes it back. A second M1 with a higher counter means the AP gave up waiting and restarted. That's how M2 is matched to M1 and M4 to M3.
+- **MIC length** isn't in the frame: 16 bytes for PSK and SAE, 24 or 32 for newer AKMs. We try each size and keep the one where the Key Data Length field exactly accounts for the rest of the frame.
+
+### DHCP
+
+DORA: **D**iscover (client broadcast), **O**ffer (server), **R**equest, **A**CK, or **NAK** if the server refuses. `xid` ties one exchange together. `chaddr` holds the client's MAC even when the reply is broadcast, so DHCP events are keyed by `chaddr`, not by the 802.11 destination.
+
+### Where the numbers come from
+
+Status, reason, AKM and cipher tables (`codes.py`) are copied from Wireshark's `packet-ieee80211.c`, so the wording matches what a Wireshark user sees. Checking there caught one mistake: reason code 45, which I'd have added from memory, isn't a defined reason code. Status **126** isn't a failure either: it means "SAE using hash-to-element" and appears in successful WPA3 exchanges.
+
+### Bugs caught by testing against real bytes
+
+- Scapy doesn't know about the 4-byte **HT Control** field that follows the header when the Order bit is set. We strip it before handing the frame to Scapy, and `header_len` accounts for it.
+- The test builder was producing beacons with the Privacy bit byte-swapped (Scapy's `cap` field wants flag names, not an int). The parser reads the field by hand, as little-endian at a fixed offset, and the public capture confirmed it was right: bytes `11 04` = 0x0411 = ESS + Privacy + Short Slot. Using a second, independent parser is what caught this.
+
+### Questions to be ready for
+
+- *How do you tell M2 from M4?* Key Data first (M2 carries the RSN element), then Secure and the nonce. Not the Secure bit alone, because of the Windows rekey behavior.
+- *Why can't you see DHCP on a WPA2 network?* It's inside encrypted data frames, sent after the 4-way handshake installs the keys. The handshake itself is unencrypted because the keys don't exist yet.
+- *What's PMF and why does WPA3 require it?* It protects deauth/disassoc/action frames. Without it, anyone can forge a deauth and kick clients off.

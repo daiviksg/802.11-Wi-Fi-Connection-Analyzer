@@ -18,8 +18,8 @@ See [SPEC.md](SPEC.md) for the full specification.
 | # | Milestone | Status |
 |---|---|---|
 | M0 | Repo setup, CI, `frames` command | ✅ done |
-| M1 | Python parsing: management frames, RSN IE, EAPOL M1 to M4, DHCP | ⏳ next |
-| M2 | Per-client timelines, failure classification, text/JSON output | |
+| M1 | Python parsing: management frames, RSN IE, EAPOL M1 to M4, DHCP | ✅ done |
+| M2 | Per-client timelines, failure classification, text/JSON output | ⏳ next |
 | M3 | C/libpcap parser for radiotap + 802.11 headers, ASan build | |
 | M4 | `compare` command: Python vs C vs tshark, in CI | |
 | M5 | Polish: demo output, architecture diagram, metrics | |
@@ -34,15 +34,18 @@ wifi-analyzer frames tests/data/public/wpa-Induction.pcap --limit 5
 pytest
 ```
 
-`wifi-analyzer frames` lists parsed 802.11 frames:
+`wifi-analyzer frames` lists parsed management, EAPOL and DHCP frames:
 
 ```
-     1    0.000000s  Beacon                 a1=ff:ff:ff:ff:ff:ff  a2=00:0c:41:82:b2:55  a3=00:0c:41:82:b2:55  seq=3973     ssid="Coherer"
-    78    5.643955s  Authentication         a1=00:0c:41:82:b2:55  a2=00:0d:93:82:36:3a  a3=00:0c:41:82:b2:55  seq=  23
-   575   15.924259s  Probe Request          a1=ef:bf:b9:f8:fe:3b  a2=4a:91:5a:a3:e4:0b  a3=f4:9f:8f:ea:7b:e6  seq= 557     [bad FCS]
+     1    0.000000s  Beacon                 sa=00:0c:41:82:b2:55  da=ff:ff:ff:ff:ff:ff  bssid=00:0c:41:82:b2:55  seq=3973     ssid="Coherer"  ch 1  WPA2-Personal (PSK)
+    80    5.644958s  Authentication         sa=00:0c:41:82:b2:55  da=00:0d:93:82:36:3a  bssid=00:0c:41:82:b2:55  seq=4041     Open System response  status 0 (Successful)
+    84    5.647953s  Assoc Response         sa=00:0c:41:82:b2:55  da=00:0d:93:82:36:3a  bssid=00:0c:41:82:b2:55  seq=4042     status 0 (Successful)  AID 1
+    87    5.649953s  EAPOL M1               sa=00:0c:41:82:b2:55  da=00:0d:93:82:36:3a  bssid=00:0c:41:82:b2:55  seq=4043     key info 0x008a  replay counter 0  key data 22 bytes
+    92    5.655957s  EAPOL M3               sa=00:0c:41:82:b2:55  da=00:0d:93:82:36:3a  bssid=00:0c:41:82:b2:55  seq=4044     key info 0x13ca  replay counter 1  key data 80 bytes
+   575   15.924259s  Probe Request          sa=4a:91:5a:a3:e4:0b  da=ef:bf:b9:f8:fe:3b  bssid=f4:9f:8f:ea:7b:e6  seq= 557     no SSID element  [bad FCS]
 ```
 
-Options: `--all` includes control and data frames, `--limit N`, and `--format json` prints one JSON object per frame. Malformed or truncated frames are always shown with an `ERROR:` note; they never crash the parser.
+Options: `--all` includes every frame (control, data), `--limit N`, and `--format json` prints one JSON object per frame. Malformed or truncated frames are always shown with an `ERROR:` note; they never crash the parser.
 
 ## Supported inputs
 

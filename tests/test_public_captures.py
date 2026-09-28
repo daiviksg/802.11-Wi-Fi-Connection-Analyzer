@@ -41,7 +41,7 @@ def test_wpa_induction_frames():
     assert all(f.error is None for f in good)
 
     beacons = [f for f in good if f.type == 0 and f.subtype == 8]
-    assert beacons and all(f.ssid == "Coherer" and f.addr2 == AP for f in beacons)
+    assert beacons and all(f.mgmt.ssid == "Coherer" and f.addr2 == AP for f in beacons)
 
     # The client's join sequence: authentication, association, and later disassociation.
     client_mgmt = [
@@ -55,6 +55,18 @@ def test_wpa_induction_frames():
         (84, "Assoc Response"),
         (1050, "Disassociation"),
     ]
+
+
+@needs_wpa_induction
+def test_wpa_induction_handshake_and_security():
+    frames = {f.idx: f for f in (parse_frame(p) for p in read_packets(WPA_INDUCTION))}
+    eapol = [(i, f.eapol.message, f.eapol.key_info, f.eapol.replay_counter) for i, f in frames.items() if f.eapol]
+    assert eapol == [(87, "M1", 0x008A, 0), (89, "M2", 0x010A, 0), (92, "M3", 0x13CA, 1), (94, "M4", 0x030A, 1)]
+    assert (frames[87].sa, frames[87].da) == (AP, CLIENT)
+    assert frames[82].mgmt.rsn.akms == [2]  # client's Assoc Request chose PSK
+    assert (frames[84].mgmt.status, frames[84].mgmt.aid) == (0, 1)
+    assert frames[1050].mgmt.reason == 8  # client leaving
+    assert frames[1].mgmt.channel == 1 and frames[1].mgmt.rsn.akms == [2]
 
 
 @needs_wpa_induction

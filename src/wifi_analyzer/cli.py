@@ -8,7 +8,8 @@ import click
 
 from . import __version__
 from .capture import read_packets
-from .frames import TYPE_MGMT, parse_frame
+from .frames import TYPE_MGMT, Frame, parse_frame
+from .report import describe_frame
 
 
 @click.group()
@@ -20,18 +21,17 @@ def main() -> None:
 @main.command()
 @click.argument("capture", type=click.Path(exists=True, dir_okay=False))
 @click.option("--limit", type=int, default=None, help="Stop after N frames are printed.")
-@click.option("--all", "show_all", is_flag=True, help="Include control and data frames, not just management.")
+@click.option("--all", "show_all", is_flag=True, help="Include every frame, not just management, EAPOL and DHCP.")
 @click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text", show_default=True)
 def frames(capture: str, limit: int | None, show_all: bool, fmt: str) -> None:
-    """Dump parsed 802.11 frames (for debugging)."""
+    """Dump parsed frames (for debugging)."""
     printed = 0
     t0 = None
     for pkt in read_packets(capture):
         frame = parse_frame(pkt)
         if frame is None:
             continue
-        # Malformed frames are always shown: hiding them would hide the bug.
-        if not show_all and frame.error is None and frame.type != TYPE_MGMT:
+        if not show_all and not _interesting(frame):
             continue
         if limit is not None and printed >= limit:
             break
@@ -44,7 +44,12 @@ def frames(capture: str, limit: int | None, show_all: bool, fmt: str) -> None:
         printed += 1
 
 
-def _format_text(frame, rel_ts: float) -> str:
+def _interesting(frame: Frame) -> bool:
+    # Malformed frames are always shown: hiding them would hide the bug.
+    return frame.error is not None or frame.type == TYPE_MGMT or frame.eapol is not None or frame.dhcp is not None
+
+
+def _format_text(frame: Frame, rel_ts: float) -> str:
     head = f"{frame.idx:>6}  {rel_ts:10.6f}s  "
     bad_fcs = "  [bad FCS]" if frame.fcs_ok is False else ""
     if frame.error:
@@ -52,13 +57,13 @@ def _format_text(frame, rel_ts: float) -> str:
     # R = retransmission, P = protected (encrypted) frame body
     flags = "".join(f for f, on in (("R", frame.retry), ("P", frame.protected)) if on)
     line = (
-        f"{frame.name:<22} a1={frame.addr1 or '-':<17}  a2={frame.addr2 or '-':<17}  "
-        f"a3={frame.addr3 or '-':<17}  seq={frame.seq if frame.seq is not None else '-':>4} {flags:<2}"
+        f"{frame.name:<22} sa={frame.sa or '-':<17}  da={frame.da or '-':<17}  "
+        f"bssid={frame.bssid or '-':<17}  seq={frame.seq if frame.seq is not None else '-':>4} {flags:<2}"
     )
-    if frame.ssid is not None:
-        line += f'  ssid="{frame.ssid}"'
-    line += bad_fcs
-    return (head + line).rstrip()
+    detail = describe_frame(frame)
+    if detail:
+        line += "  " + detail
+    return (head + line + bad_fcs).rstrip()
 
 
 if __name__ == "__main__":

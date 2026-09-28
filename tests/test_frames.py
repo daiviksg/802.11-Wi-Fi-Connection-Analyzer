@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 import zlib
 
-from conftest import AP, BCAST, STA, auth_req, beacon, probe_req
+from builders import AP, BCAST, STA, auth, beacon, probe_req
 from scapy.layers.dot11 import Dot11, RadioTap
 from scapy.layers.inet import IP, UDP
 from scapy.layers.l2 import Ether
@@ -25,10 +25,11 @@ def test_radiotap_management_frames(radiotap_capture):
     b, p, a = frames
     assert (b.type, b.subtype, b.name) == (0, 8, "Beacon")
     assert (b.addr1, b.addr2, b.addr3) == (BCAST, AP, AP)
+    assert (b.da, b.sa, b.bssid) == (BCAST, AP, AP)
     assert b.seq == 100
-    assert b.ssid == "LabNet"
-    assert (p.subtype, p.addr2, p.ssid, p.seq) == (4, STA, "LabNet", 1)
-    assert (a.name, a.addr1, a.addr2, a.ssid) == ("Authentication", AP, STA, None)
+    assert b.mgmt.ssid == "LabNet"
+    assert (p.subtype, p.addr2, p.mgmt.ssid, p.seq) == (4, STA, "LabNet", 1)
+    assert (a.name, a.addr1, a.addr2, a.mgmt.ssid) == ("Authentication", AP, STA, None)
     assert all(f.error is None and f.fcs_ok is None for f in frames)
     assert abs(p.ts - b.ts - 0.001) < 1e-6
 
@@ -36,14 +37,15 @@ def test_radiotap_management_frames(radiotap_capture):
 def test_raw_80211_linktype(write_pcap):
     path = write_pcap("raw.pcap", [beacon("Raw"), probe_req()], linktype=105)
     b, p = parse_all(path)
-    assert (b.subtype, b.ssid, b.addr2) == (8, "Raw", AP)
+    assert (b.subtype, b.mgmt.ssid, b.addr2) == (8, "Raw", AP)
     assert p.subtype == 4
 
 
-def test_ethernet_has_no_80211_frames(write_pcap):
-    pkt = Ether(src=STA, dst=BCAST) / IP() / UDP(sport=68, dport=67)
+def test_ethernet_has_no_80211_fields(write_pcap):
+    pkt = Ether(src=STA, dst=BCAST) / IP() / UDP(sport=1234, dport=80)
     path = write_pcap("eth.pcap", [pkt], linktype=1)
-    assert parse_all(path) == [None]
+    (f,) = parse_all(path)
+    assert (f.linktype, f.type, f.sa, f.da, f.dhcp, f.error) == (1, None, STA, BCAST, None, None)
 
 
 def test_pcapng(tmp_path):
@@ -52,7 +54,7 @@ def test_pcapng(tmp_path):
     pkt.time = 1_700_000_000.5
     wrpcapng(str(path), [pkt])
     (f,) = parse_all(path)
-    assert f.ssid == "NG"
+    assert f.mgmt.ssid == "NG"
     assert abs(f.ts - 1_700_000_000.5) < 1e-6
 
 
@@ -64,7 +66,7 @@ def test_radiotap_length_is_read_not_assumed(write_pcap):
     pkts = list(read_packets(path))
     assert radiotap_length(pkts[0].data) == 8
     assert radiotap_length(pkts[1].data) > 8
-    assert [f.ssid for f in parse_all(path)] == ["LabNet", "LabNet"]
+    assert [f.mgmt.ssid for f in parse_all(path)] == ["LabNet", "LabNet"]
 
 
 def test_fcs_checked(write_pcap):
@@ -76,7 +78,7 @@ def test_fcs_checked(write_pcap):
     raw[-10] ^= 0xFF  # corrupt one body byte; the FCS no longer matches
     path = write_pcap("fcs.pcap", [good, bytes(raw)], linktype=127)
     ok, bad = parse_all(path)
-    assert ok.fcs_ok is True and ok.ssid == "LabNet"
+    assert ok.fcs_ok is True and ok.mgmt.ssid == "LabNet"
     assert bad.fcs_ok is False
 
 
@@ -89,7 +91,7 @@ def test_control_frame_has_only_addr1(write_pcap):
 
 
 def test_truncated_management_frame(write_pcap):
-    full = bytes(RadioTap() / auth_req())
+    full = bytes(RadioTap() / auth(True))
     cut = full[: 8 + 20]  # radiotap (8) + only 20 of the 24 header bytes
     path = write_pcap("trunc.pcap", [cut], linktype=127)
     (f,) = parse_all(path)
