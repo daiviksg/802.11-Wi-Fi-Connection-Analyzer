@@ -8,6 +8,7 @@ import click
 
 from . import __version__
 from .capture import read_packets
+from .compare import ParserError, compare_capture, report_json, report_text
 from .frames import TYPE_MGMT, Frame, parse_frame
 from .report import build_report, describe_frame, render_text
 
@@ -30,6 +31,23 @@ def analyze(capture: str, client: str | None, bssid: str | None, fmt: str) -> No
         click.echo(json.dumps(report, indent=2))
     else:
         click.echo(render_text(report), nl=False)
+
+
+@main.command()
+@click.argument("capture", type=click.Path(exists=True, dir_okay=False))
+@click.option("--wifiparse", "wifiparse_path", default=None, help="Path to the C parser (default: c/wifiparse, $WIFIPARSE, PATH).")
+@click.option("--tshark", "tshark_path", default=None, help="Path to tshark (default: $TSHARK, PATH).")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text", show_default=True)
+def compare(capture: str, wifiparse_path: str | None, tshark_path: str | None, fmt: str) -> None:
+    """Agreement report: Python parser vs C parser vs tshark, field by field."""
+    try:
+        result = compare_capture(capture, wifiparse=wifiparse_path, tshark=tshark_path)
+    except ParserError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if fmt == "json":
+        click.echo(json.dumps(report_json(result), indent=2, default=str))
+    else:
+        click.echo(report_text(result), nl=False)
 
 
 @main.command()
