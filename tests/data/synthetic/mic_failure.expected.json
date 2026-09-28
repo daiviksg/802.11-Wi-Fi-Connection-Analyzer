@@ -1,0 +1,11 @@
+{
+  "description": "Deauth reason 14 during the handshake",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "MIC_FAILURE",
+      "reason_code": 14
+    }
+  ]
+}

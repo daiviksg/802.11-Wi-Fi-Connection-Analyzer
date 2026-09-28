@@ -19,8 +19,8 @@ See [SPEC.md](SPEC.md) for the full specification.
 |---|---|---|
 | M0 | Repo setup, CI, `frames` command | ✅ done |
 | M1 | Python parsing: management frames, RSN IE, EAPOL M1 to M4, DHCP | ✅ done |
-| M2 | Per-client timelines, failure classification, text/JSON output | ⏳ next |
-| M3 | C/libpcap parser for radiotap + 802.11 headers, ASan build | |
+| M2 | Per-client timelines, failure classification, text/JSON output | ✅ done |
+| M3 | C/libpcap parser for radiotap + 802.11 headers, ASan build | ⏳ next |
 | M4 | `compare` command: Python vs C vs tshark, in CI | |
 | M5 | Polish: demo output, architecture diagram, metrics | |
 
@@ -30,11 +30,39 @@ See [SPEC.md](SPEC.md) for the full specification.
 python -m venv .venv
 .venv/bin/pip install -e ".[dev]"          # Windows: .venv\Scripts\pip
 python tests/data/public/fetch.py          # downloads public sample captures
-wifi-analyzer frames tests/data/public/wpa-Induction.pcap --limit 5
+wifi-analyzer analyze tests/data/synthetic/handshake_no_m3.pcap
 pytest
 ```
 
-`wifi-analyzer frames` lists parsed management, EAPOL and DHCP frames:
+## `analyze`: where did the connection fail?
+
+```
+Capture: handshake_no_m3.pcap  (12 packets; skipped 0 with bad FCS, 0 malformed, 0 retransmissions)
+
+Network: "LabNet"  BSSID 02:00:00:00:00:aa  Security: WPA3-Personal (SAE, PMF required)  Channel 6
+
+Client 02:00:00:00:00:01
+    0.000s  Probe Request -> "LabNet"
+    0.004s  Auth (SAE commit)         status 0  from client
+    0.005s  Auth (SAE commit)         status 0  from AP
+    0.008s  Auth (SAE confirm)        status 0  from client
+    0.009s  Auth (SAE confirm)        status 0  from AP
+    0.010s  Assoc Request
+    0.012s  Assoc Response            status 0 (Successful)  AID 3
+    0.015s  EAPOL M1
+    0.018s  EAPOL M2
+    1.020s  EAPOL M1 (retry, replay counter 2)
+    2.021s  Deauth                    reason 15 (4-way handshake timeout)  from AP
+  RESULT: HANDSHAKE_NO_M3 -> AP never sent M3 after M2. AP then sent Deauthentication, reason 15 (4-way handshake timeout). Most likely cause: wrong passphrase. The AP checks M2's MIC with its own key; a different passphrase gives a different key, so the check fails and the AP drops M2.
+```
+
+`wifi-analyzer analyze <capture> [--client MAC] [--bssid MAC] [--format text|json]`. The JSON output has the same data in a stable schema: [docs/OUTPUT_SCHEMA.md](docs/OUTPUT_SCHEMA.md).
+
+Result codes: `CONNECTED`, `AUTH_FAILED`, `SAE_FAILED`, `ASSOC_REJECTED`, `HANDSHAKE_NO_M2`, `HANDSHAKE_NO_M3`, `HANDSHAKE_NO_M4`, `HANDSHAKE_TIMEOUT`, `MIC_FAILURE`, `DHCP_NO_OFFER`, `DHCP_NAK`, `DEAUTHENTICATED`, `INCOMPLETE`. A missing message only counts as a failure with evidence (a deauth, or the AP retrying); otherwise the result is `INCOMPLETE`. Corrupted (bad FCS) frames and MAC-level retransmissions are never used as evidence.
+
+## `frames`: what did the parser see?
+
+`wifi-analyzer frames <capture>` lists parsed management, EAPOL and DHCP frames (here from the public `wpa-Induction.pcap`):
 
 ```
      1    0.000000s  Beacon                 sa=00:0c:41:82:b2:55  da=ff:ff:ff:ff:ff:ff  bssid=00:0c:41:82:b2:55  seq=3973     ssid="Coherer"  ch 1  WPA2-Personal (PSK)
@@ -53,9 +81,16 @@ Options: `--all` includes every frame (control, data), `--limit N`, and `--forma
 |---|---|---|
 | 802.11 + radiotap | 127 | Main target: monitor-mode captures |
 | 802.11 | 105 | Raw 802.11 frames |
-| Ethernet | 1 | DHCP analysis of wired-side captures (M1+) |
+| Ethernet | 1 | DHCP analysis of wired-side captures |
 
 ## Limits
 
 - Reads capture files only; no live capture.
 - Doesn't decrypt traffic. On WPA2/WPA3 networks, DHCP travels inside encrypted data frames, so it is reported as "not observable" rather than as a failure.
+
+## Test data
+
+- `tests/data/synthetic/`: 21 deterministic captures made by `tests/gen_captures.py`, one or more per result code, each with an `.expected.json`. All MAC addresses are locally administered (`02:...`).
+- `tests/data/public/`: public Wireshark sample captures, downloaded by `fetch.py` (not committed). See [SOURCES.md](tests/data/public/SOURCES.md).
+
+Design notes for each milestone are in [docs/NOTES.md](docs/NOTES.md).

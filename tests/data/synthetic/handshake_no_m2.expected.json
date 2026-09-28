@@ -1,0 +1,11 @@
+{
+  "description": "Client never answers M1",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "HANDSHAKE_NO_M2",
+      "reason_code": 15
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "AP rejects the SAE group: status 77",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "SAE_FAILED",
+      "status_code": 77
+    }
+  ]
+}

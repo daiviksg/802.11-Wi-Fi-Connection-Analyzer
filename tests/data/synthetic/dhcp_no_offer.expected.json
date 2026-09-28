@@ -1,0 +1,11 @@
+{
+  "description": "Open network, three unanswered Discovers",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "DHCP_NO_OFFER",
+      "dhcp": "no offer"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Open System auth to a WPA3-only AP: status 13",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "AUTH_FAILED",
+      "status_code": 13
+    }
+  ]
+}

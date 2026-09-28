@@ -1,0 +1,11 @@
+{
+  "description": "Wired-side capture: DHCP only",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": null,
+      "code": "CONNECTED",
+      "dhcp": "ACK (10.0.0.20)"
+    }
+  ]
+}

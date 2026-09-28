@@ -100,3 +100,31 @@ Status, reason, AKM and cipher tables (`codes.py`) are copied from Wireshark's `
 - *How do you tell M2 from M4?* Key Data first (M2 carries the RSN element), then Secure and the nonce. Not the Secure bit alone, because of the Windows rekey behavior.
 - *Why can't you see DHCP on a WPA2 network?* It's inside encrypted data frames, sent after the 4-way handshake installs the keys. The handshake itself is unencrypted because the keys don't exist yet.
 - *What's PMF and why does WPA3 require it?* It protects deauth/disassoc/action frames. Without it, anyone can forge a deauth and kick clients off.
+
+## M2: Timelines and failure classification
+
+### From frames to a verdict
+
+1. **Keep only evidence** (`timeline.py`). Skip frames with a bad FCS or a parse error. Also skip MAC-level **retransmissions**: a frame with the Retry bit and the same transmitter + sequence number as the previous one is a copy sent because an ACK was lost, not a new message. Without this, one lost ACK would look like "the AP re-sent M1".
+2. **Group by (client, BSSID).** For management and EAPOL frames, if the source is the BSSID the AP sent it, otherwise the client did. DHCP is grouped by `chaddr` because the server's replies are often broadcast. A broadcast deauth from an AP (Addr1 = ff:ff:ff:ff:ff:ff) is added to every client of that BSSID. Probe requests don't name a BSSID, so they're attached to a client's timeline if they came before the first join frame and asked for that network's SSID (or any SSID).
+3. **Split into attempts** (`classify.py`). A client often tries more than once: after a failure it starts over with a new Authentication request. We classify the **last** attempt and note how many there were. SAE commits re-sent inside one exchange (after an anti-clogging request, status 76) don't start a new attempt.
+4. **Walk the gates in order:** auth → association → 4-way handshake → DHCP. The first explicit failure (a failure status, or a deauth) decides the result; otherwise, where the client stopped decides it.
+
+### Decisions worth defending
+
+- **"Missing message" needs evidence.** "M1 seen, no M2" could just mean the capture stopped. We report `HANDSHAKE_NO_M2/M3/M4` only if something shows the other side gave up: a deauth, or the AP re-sending its message with a **new replay counter**. Otherwise the result is `INCOMPLETE`. The same rule applies to DHCP (two or more unanswered Discovers) and SAE (repeated Confirms).
+- **Precedence during the handshake.** Deauth reason 14 (MIC failure) is an explicit statement, so it wins. Otherwise the *missing message* is more useful than reason 15 ("timeout" says it failed, the gap says where), which matches the spec's example (M2 then deauth 15 → `HANDSHAKE_NO_M3`). `HANDSHAKE_TIMEOUT` is for reason 15 when no EAPOL frames were captured at all.
+- **Why "no M3" means "wrong passphrase".** The AP derives the session key from the passphrase, both nonces and both MACs, then checks M2's MIC with it. With a different passphrase the client computed a different key, so the MIC doesn't match and the AP silently drops M2. It never sends M3, and eventually it retries M1 or times out. The SAE equivalent: the AP can't verify the client's Confirm, so it never sends its own.
+- **Leaving isn't failing.** If a client completes the connection and later sends deauth/disassoc reason 3 or 8 ("I'm leaving"), the result is `CONNECTED` with a note. The public sample ends exactly like this. A deauth from the AP after connecting (e.g. reason 4, inactivity) is `DEAUTHENTICATED`.
+- **Missing frames are inferred carefully.** An AP only sends M1 after a successful association, so M1 proves association even if the Assoc Response wasn't captured. Unencrypted DHCP between client and AP proves the link is up. Whether the handshake is needed comes from the Beacon's RSN element, or failing that from the client's Assoc Request.
+- **DHCP on WPA2/WPA3.** No DHCP frames on an RSN network gives "not observable: encrypted", never a DHCP failure (SPEC 4.6). On an open network, no DHCP frames gives "not seen" (static IP, or the capture missed it).
+
+### Test data
+
+`tests/gen_captures.py` writes 21 deterministic captures (every result code, plus WPA3 anti-clogging, roaming, a client leaving, a truncated frame and a wired DHCP exchange), each with an `.expected.json`. It writes the pcap format directly: a 24-byte global header, then a 16-byte header per packet. That keeps timestamps exact and lets a truncated byte string sit between normal frames. A test regenerates everything and checks the committed files are byte-identical, so the data can't drift from the generator.
+
+### Questions to be ready for
+
+- *A user says "Wi-Fi doesn't work". What do you look at?* The client's last attempt: did authentication, association and the 4-way handshake complete? Which message is missing, and did the AP retry? Then DHCP, if it's visible.
+- *Why would the AP re-send M1?* It didn't get a valid M2 in time: the client didn't answer, or its MIC was wrong.
+- *How do you avoid blaming the wrong stage?* Ignore corrupted frames, drop MAC-level duplicates, require evidence before calling a failure, and prefer explicit reason and status codes over inference.

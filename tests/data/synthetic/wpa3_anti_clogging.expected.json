@@ -1,0 +1,10 @@
+{
+  "description": "SAE with an anti-clogging token request (status 76) is not a failure",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "CONNECTED"
+    }
+  ]
+}

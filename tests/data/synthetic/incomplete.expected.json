@@ -1,0 +1,10 @@
+{
+  "description": "Capture ends after the association request",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "INCOMPLETE"
+    }
+  ]
+}

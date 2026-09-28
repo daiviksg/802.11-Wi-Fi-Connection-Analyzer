@@ -22,7 +22,9 @@ jobs:
       - name: Test
         run: pytest -v
       - name: Smoke-test the CLI on a public capture
-        run: wifi-analyzer frames tests/data/public/wpa-Induction.pcap --limit 5
+        run: |
+          wifi-analyzer frames tests/data/public/wpa-Induction.pcap --limit 5
+          wifi-analyzer analyze tests/data/public/wpa-Induction.pcap
 
   # Milestone 3 adds a C job here: build (normal + ASan/UBSan) and test c/wifiparse.
   # Milestone 4 adds tshark and the C-vs-Python-vs-tshark comparison.

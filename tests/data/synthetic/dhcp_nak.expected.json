@@ -1,0 +1,11 @@
+{
+  "description": "Open network, the server NAKs the requested address",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "DHCP_NAK",
+      "dhcp": "NAK"
+    }
+  ]
+}

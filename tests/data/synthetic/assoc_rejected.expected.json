@@ -1,0 +1,11 @@
+{
+  "description": "AP is full: association status 17",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "ASSOC_REJECTED",
+      "status_code": 17
+    }
+  ]
+}

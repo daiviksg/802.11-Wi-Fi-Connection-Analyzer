@@ -1,0 +1,11 @@
+{
+  "description": "Client never sends M4",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "HANDSHAKE_NO_M4",
+      "reason_code": 15
+    }
+  ]
+}

@@ -9,13 +9,27 @@ import click
 from . import __version__
 from .capture import read_packets
 from .frames import TYPE_MGMT, Frame, parse_frame
-from .report import describe_frame
+from .report import build_report, describe_frame, render_text
 
 
 @click.group()
 @click.version_option(__version__)
 def main() -> None:
     """Find where a Wi-Fi connection attempt succeeded or failed."""
+
+
+@main.command()
+@click.argument("capture", type=click.Path(exists=True, dir_okay=False))
+@click.option("--client", default=None, help="Only this client MAC.")
+@click.option("--bssid", default=None, help="Only this AP (BSSID).")
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text", show_default=True)
+def analyze(capture: str, client: str | None, bssid: str | None, fmt: str) -> None:
+    """Show each client's connection attempt and where it succeeded or failed."""
+    report = build_report(capture, client=client, bssid=bssid)
+    if fmt == "json":
+        click.echo(json.dumps(report, indent=2))
+    else:
+        click.echo(render_text(report), nl=False)
 
 
 @main.command()

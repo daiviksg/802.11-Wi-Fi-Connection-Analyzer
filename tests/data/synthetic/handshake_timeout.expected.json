@@ -1,0 +1,11 @@
+{
+  "description": "Deauth reason 15 with no EAPOL frames captured",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "HANDSHAKE_TIMEOUT",
+      "reason_code": 15
+    }
+  ]
+}

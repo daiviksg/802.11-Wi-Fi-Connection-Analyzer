@@ -1,0 +1,11 @@
+{
+  "description": "AP never sends M3 after M2 (wrong passphrase)",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "HANDSHAKE_NO_M3",
+      "reason_code": 15
+    }
+  ]
+}

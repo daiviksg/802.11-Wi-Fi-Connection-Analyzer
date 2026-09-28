@@ -1,0 +1,15 @@
+{
+  "description": "Client roams from AP to AP2 by reassociation",
+  "results": [
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:aa",
+      "code": "CONNECTED"
+    },
+    {
+      "client": "02:00:00:00:00:01",
+      "bssid": "02:00:00:00:00:bb",
+      "code": "CONNECTED"
+    }
+  ]
+}
