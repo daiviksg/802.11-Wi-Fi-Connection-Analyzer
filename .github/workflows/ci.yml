@@ -51,7 +51,9 @@ jobs:
       - name: Fetch public captures
         run: python tests/data/public/fetch.py
       - name: All tests with the sanitizer build (C vs Python vs tshark, fuzzing)
-        run: WIFIPARSE=c/wifiparse-debug pytest -v -rs
+        run: |
+          mkdir -p reports
+          WIFIPARSE=c/wifiparse-debug pytest -v -rs --junitxml=reports/junit.xml
       - name: C parser tests with the optimized build
         run: WIFIPARSE=c/wifiparse pytest -v tests/test_c_parser.py tests/test_compare.py
       - name: Valgrind (leaks and invalid reads)
@@ -61,12 +63,15 @@ jobs:
           done
       - name: Agreement report (Python vs C vs tshark)
         run: |
-          mkdir -p reports
           for f in tests/data/public/*.pcap tests/data/synthetic/*.pcap; do
             wifi-analyzer compare "$f" | tee -a reports/compare.txt
             wifi-analyzer compare --format json "$f" > "reports/$(basename "$f" .pcap).json"
           done
+      - name: Summary (job summary + public annotations)
+        if: always()
+        run: python scripts/ci_summary.py reports
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: compare-report
           path: reports/
